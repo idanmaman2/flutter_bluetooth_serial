@@ -4,7 +4,14 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:flutter_bluetooth_serial_example/Map.dart';
 import 'package:geolocator/geolocator.dart';
+import 'dart:io' show Platform;
+// import 'dart:io' as io;
+
+import 'package:teledart/teledart.dart';
+import 'package:teledart/telegram.dart';
+import 'package:teledart/model.dart';
 
 class ChatPage extends StatefulWidget {
   final BluetoothDevice server;
@@ -23,9 +30,9 @@ class _Message {
 }
 
 class _ChatPage extends State<ChatPage> {
+  bool _first = true;
   static final clientID = 0;
   BluetoothConnection? connection;
-
   List<_Message> messages = List<_Message>.empty(growable: true);
   String _messageBuffer = '';
 
@@ -136,8 +143,11 @@ class _ChatPage extends State<ChatPage> {
             margin: EdgeInsets.only(bottom: 8.0, left: 8.0, right: 8.0),
             width: 222.0,
             decoration: BoxDecoration(
-                color:
-                    _message.whom == clientID ? Colors.blueAccent : Colors.grey,
+                color: _message.whom == clientID
+                    ? Colors.blueAccent
+                    : _message.whom == 1
+                        ? Colors.grey
+                        : Colors.redAccent,
                 borderRadius: BorderRadius.circular(7.0)),
           ),
         ],
@@ -149,6 +159,12 @@ class _ChatPage extends State<ChatPage> {
 
     final serverName = widget.server.name ?? "Unknown";
     return Scaffold(
+      floatingActionButton: FloatingActionButton(
+          child: const Icon(Icons.gps_fixed_rounded),
+          onPressed: () async {
+            print((await _determinePosition()).toString());
+            _printMessage((await _determinePosition()).toString());
+          }),
       appBar: AppBar(
           title: (isConnecting
               ? Text('Connecting chat to ' + serverName + '...')
@@ -156,52 +172,55 @@ class _ChatPage extends State<ChatPage> {
                   ? Text('Live chat with ' + serverName)
                   : Text('Chat log with ' + serverName))),
       body: SafeArea(
-        child: Column(
-          children: <Widget>[
-            Flexible(
-              child: ListView(
-                  padding: const EdgeInsets.all(12.0),
-                  controller: listScrollController,
-                  children: list),
-            ),
-            Row(
-              children: <Widget>[
-                Flexible(
-                  child: Container(
-                    margin: const EdgeInsets.only(left: 16.0),
-                    child: TextField(
-                      style: const TextStyle(fontSize: 15.0),
-                      controller: textEditingController,
-                      decoration: InputDecoration.collapsed(
-                        hintText: isConnecting
-                            ? 'Wait until connected...'
-                            : isConnected
-                                ? "conected"
-                                : 'Chat got disconnected',
-                        hintStyle: const TextStyle(color: Colors.grey),
+        child: Container(
+          color: Colors.transparent,
+          child: Stack(
+            children: <Widget>[
+              Flexible(
+                child: ListView(
+                    padding: const EdgeInsets.all(12.0),
+                    controller: listScrollController,
+                    children: list),
+              ),
+              Column(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: StreamBuilder(
+                            stream: Geolocator.getPositionStream(),
+                            builder: (BuildContext context,
+                                AsyncSnapshot<dynamic> snapshot) {
+                              if (!snapshot.hasData) {
+                                return const CircularProgressIndicator();
+                              }
+                              if (snapshot.connectionState ==
+                                  ConnectionState.done) {}
+
+                              return Container(
+                                  width: 100,
+                                  height: 300,
+                                  child:
+                                      MapWid(loct: snapshot.data as Position));
+                            }),
                       ),
-                      enabled: isConnected,
-                    ),
+                    ],
                   ),
-                ),
-                Container(
-                  margin: const EdgeInsets.all(8.0),
-                  child: IconButton(
-                      icon: const Icon(Icons.send),
-                      onPressed: isConnected
-                          ? () async =>
-                              _sendMessage(_determinePosition().toString())
-                          : null),
-                ),
-              ],
-            )
-          ],
+                ],
+              )
+            ],
+          ),
         ),
       ),
     );
   }
 
   void _onDataReceived(Uint8List data) {
+    if (_first) {
+      _first = false; //
+      return;
+    }
     // Allocate buffer for parsed data
     int backspacesCounter = 0;
     data.forEach((byte) {
@@ -230,14 +249,27 @@ class _ChatPage extends State<ChatPage> {
     String dataString = String.fromCharCodes(buffer);
     int index = buffer.indexOf(13);
     if (~index != 0) {
+      String text = backspacesCounter > 0
+          ? _messageBuffer.substring(
+              0, _messageBuffer.length - backspacesCounter)
+          : _messageBuffer + dataString.substring(0, index);
+      print(text);
+      if (text.contains("Accident!")) {
+        _determinePosition().then((ele) async {
+          await sendTeleMessage(ele.toString());
+        });
+      }
       setState(() {
         messages.add(
           _Message(
             1,
-            backspacesCounter > 0
-                ? _messageBuffer.substring(
-                    0, _messageBuffer.length - backspacesCounter)
-                : _messageBuffer + dataString.substring(0, index),
+            text,
+          ),
+        );
+        messages.add(
+          _Message(
+            2,
+            "Location sent to MADA on telegram",
           ),
         );
         _messageBuffer = dataString.substring(index);
@@ -274,5 +306,40 @@ class _ChatPage extends State<ChatPage> {
         setState(() {});
       }
     }
+  }
+
+  void _printMessage(String text) async {
+    text = text.trim();
+    textEditingController.clear();
+
+    if (text.length > 0) {
+      try {
+        sendTeleMessage(text);
+        setState(() {
+          messages.add(_Message(clientID, text));
+        });
+
+        Future.delayed(Duration(milliseconds: 333)).then((_) {
+          listScrollController.animateTo(
+              listScrollController.position.maxScrollExtent,
+              duration: Duration(milliseconds: 333),
+              curve: Curves.easeOut);
+        });
+      } catch (e) {
+        // Ignore error, but notify state
+        setState(() {});
+      }
+    }
+  }
+
+  Future sendTeleMessage(String text) async {
+    final username =
+        (await Telegram("5504912392:AAHru2oze5ut3nAkT-gWZjpPoHz52osipk8")
+                .getMe())
+            .username;
+    var teledart = TeleDart(
+        "5504912392:AAHru2oze5ut3nAkT-gWZjpPoHz52osipk8", Event(username!));
+    teledart.start();
+    teledart.sendMessage(578990243, "Accident detected !!! - by IDHM" + text);
   }
 }
