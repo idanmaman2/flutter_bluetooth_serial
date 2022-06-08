@@ -189,8 +189,11 @@ class _ChatPage extends State<ChatPage> {
                   child: IconButton(
                       icon: const Icon(Icons.send),
                       onPressed: isConnected
-                          ? () async =>
-                              _sendMessage(_determinePosition().toString())
+                          ? () async {
+                              print((await _determinePosition()).toString());
+                              return _sendMessage(
+                                  (await _determinePosition()).toString());
+                            }
                           : null),
                 ),
               ],
